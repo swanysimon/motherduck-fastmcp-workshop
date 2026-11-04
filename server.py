@@ -10,12 +10,13 @@ from collections.abc import Callable
 from statistics import median
 from typing import Annotated, Literal
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
+from mcp.types import InputRequiredResult
 from pydantic import Field
 
 from sf311.data import BY_ID, LOCAL_NAMES, NEIGHBORHOODS, REQUESTS, SERVICES, Request, closest
-from sf311.kit import caller_email
+from sf311.kit import ask_choice, caller_email, read_choice
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sf-311")
@@ -152,6 +153,37 @@ def get_request(request_id: str) -> dict:
     if request_id not in BY_ID:
         raise ToolError(f"No request with id {request_id!r}. Use search_requests to find real ids.")
     return _masked(BY_ID[request_id])
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+def count_in_neighborhood(ctx: Context, name: str, boundary: str | None = None) -> int | str | InputRequiredResult:
+    """Count requests in a neighborhood, by official or local name, such as "Lower Nob Hill".
+
+    A local name can span several official neighborhoods. Then the user is
+    asked which part to count, unless boundary is given: one of the official
+    neighborhoods it overlaps, or "all". Use count_requests for official
+    names with service filters or grouping.
+    """
+    if name in NEIGHBORHOODS:
+        return sum(1 for r in REQUESTS if r.neighborhood == name)
+    if name not in LOCAL_NAMES:
+        suggestions = ", ".join(closest(name, NEIGHBORHOODS + LOCAL_NAMES)) or "none close"
+        raise ToolError(f"Unknown neighborhood {name!r}. Did you mean: {suggestions}?")
+    in_area = [r for r in REQUESTS if r.local_name == name]
+    parts = sorted({r.neighborhood for r in in_area if r.neighborhood})
+    everything = f"All of {name}"
+    if boundary is None and len(parts) > 1:
+        choice = read_choice(ctx, "boundary")
+        if choice is None:
+            return ask_choice("boundary", f"{name} spans {', '.join(parts)}. Which part should I count?", [*parts, everything])
+        if not choice.accepted:
+            return f"Nothing was counted: no part of {name} was chosen. Call again with boundary set to one of {parts} or 'all'."
+        boundary = choice.value
+    if boundary in (None, "all", everything):
+        return len(in_area)
+    if boundary not in parts:
+        raise ToolError(f"{name} does not overlap {boundary!r}. Use one of {parts}, or 'all'.")
+    return sum(1 for r in in_area if r.neighborhood == boundary)
 
 
 if __name__ == "__main__":
