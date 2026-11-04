@@ -3,6 +3,8 @@
 FastMCP Gateway runs this file. Its entrypoint setting is `server.py:mcp`.
 """
 
+import logging
+import re
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from statistics import median
@@ -13,6 +15,10 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from sf311.data import BY_ID, LOCAL_NAMES, NEIGHBORHOODS, REQUESTS, SERVICES, Request, closest
+from sf311.kit import caller_email
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("sf-311")
 
 mcp = FastMCP("sf-311")
 
@@ -37,6 +43,7 @@ def dataset_info() -> dict:
 
 MAX_ROWS = 50
 MIN_CLOSED_FOR_MEDIAN = 10
+HOUSE_NUMBER = re.compile(r"^(\d+)\s+([^,]+)")
 
 GroupBy = Literal["neighborhood", "service", "agency", "source", "weekday", "status"]
 MedianGroupBy = Literal["neighborhood", "agency"]
@@ -54,6 +61,14 @@ def _check(name: str | None, choices: list[str], kind: str) -> None:
     if name is not None and name not in choices:
         suggestions = ", ".join(closest(name, choices)) or "none close"
         raise ToolError(f"Unknown {kind} {name!r}. Did you mean: {suggestions}? Call dataset_info for every valid name.")
+
+
+def _masked(request: Request) -> dict:
+    row = request.as_dict()
+    match = HOUSE_NUMBER.match(request.address)
+    if match:
+        row["address"] = f"{int(match.group(1)) // 100 * 100} block of {match.group(2).strip()}"
+    return row
 
 
 def _matching(service: str | None, neighborhood: str | None = None, status: str | None = None) -> list[Request]:
@@ -80,7 +95,7 @@ def search_requests(
     Service and neighborhood must be exact names from dataset_info.
     """
     rows = sorted(_matching(service, neighborhood, status), key=lambda r: r.opened, reverse=True)
-    return [r.as_dict() for r in rows[:limit]]
+    return [_masked(r) for r in rows[:limit]]
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
@@ -133,9 +148,10 @@ def get_request(request_id: str) -> dict:
     Use this to look up an ID seen in search_requests results. To find
     requests without an ID, use search_requests.
     """
+    logger.info("get_request %s by %s", request_id, caller_email() or "local")
     if request_id not in BY_ID:
         raise ToolError(f"No request with id {request_id!r}. Use search_requests to find real ids.")
-    return BY_ID[request_id].as_dict()
+    return _masked(BY_ID[request_id])
 
 
 if __name__ == "__main__":
