@@ -143,6 +143,27 @@ def median_close_hours(service: str | None = None, group_by: MedianGroupBy | Non
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
+def slowest_requests(
+    service: str | None = None,
+    neighborhood: str | None = None,
+    limit: Annotated[int, Field(ge=1, le=MAX_ROWS)] = 5,
+) -> list[dict]:
+    """List the closed requests that took longest to close, slowest first.
+
+    Each row has the request's fields plus hours_to_close, rounded to 0.1.
+    Use this for "the longest time any request took" questions. For typical
+    response times use median_close_hours. Service and neighborhood must be
+    exact names from dataset_info.
+    """
+    rows = sorted(
+        (r for r in _matching(service, neighborhood) if r.hours_to_close is not None),
+        key=lambda r: r.hours_to_close,
+        reverse=True,
+    )
+    return [_masked(r) | {"hours_to_close": round(r.hours_to_close, 1)} for r in rows[:limit]]
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
 def get_request(request_id: str) -> dict:
     """Return one request by its request_id, with every field.
 
